@@ -1,0 +1,165 @@
+---
+title: "Comparison of Hierarchical Parent Proportion Tests"
+author: "Adam Chan"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    number_sections: yes
+    self_contained: yes
+    theme: spacelab
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=9)
+knitr::opts_knit$set(root.dir = "C:\\Users\\acha5354\\Desktop\\New Folder\\{SW}\\PhD\\Projects\\200518 - Mass Cytometry Analyses")
+```
+
+# Data Loading
+The following datasets were used in this analysis:
+
+CyTOF:
+
+- Age Chronic Inflammation, Shen-Orr 2016 <br>
+1036209 cells from 29 samples
+Predicting young/old from 
+
+- Anti-CTLA-4 and Anti-PD-1, Subrahmanyam 2018 <br>
+7264780 cells from 24 samples
+Predicting response/nonresponse to treatment
+
+- Anti-PD-1, Kreig 2018 <br>
+85715 cells from 20 samples
+Predicting response/nonresponse to treatment
+
+- Breast Cancer, Wagner 2019 <br>
+855914 cells from 194 samples
+Predicting tumor/non-tumor breast cancer samples
+
+- CMV, Davis 2019 <br>
+18153877 cells from 69 samples
+Predicting positive/negative result from CMV titer in flu vaccine patients
+
+- COVID-19 Whole blood CyTOF, Geanon 2021
+4747543 cells from 21 hospitalized covid-19 patients and healthy controls 
+
+Flow Cytometry:
+
+- AML, FlowCAP-II 2013 <br>
+55711535 cells from 359 samples
+Predicting aml/normal patients
+
+- COVID-19 PBMC, Humblet-Baron 2020 <br>
+6510011 cells from 49 patients (6 health, 23 mild-to-moderate, 20 severe) samples
+Predicting mild vs severe COVID-19 through PBMC immune profile
+
+- COVID-19 CD4 & CD8 T Cells, De Biasi 2020 <br>
+Subset of 5000 cells from 12 Healthy controls and 19 covid patients
+
+- COVID-19 CD8 Non Naive, Mathew 2020 <br>
+54 healthy donors and 114 covid patients. Analysed 60% of the original
+cells which amounted to 11,591,741. Predicting between recovered donors
+and healthy donors
+
+- MS HSCT, Ma 2020 <br>
+Predicting between relapse and non-relapse patients recovering from
+stem cell transplant
+
+scRNA-seq:
+- Melanoma, Sade-Feldman 2019
+
+```{r}
+#' Parent proportion test scripts
+#' This script is to summarise results from the treeParentProportionTest.R Scripts
+
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(gridExtra)
+  library(latex2exp)
+})
+
+treeSigFiles <- list.files("data/benchmarking_data/significance",
+                                     full.names = TRUE)
+
+load(file = treeSigFiles[1])
+
+tree_sig_df_combined <- tree_sig_df 
+
+for (i in 2:length(treeSigFiles)){
+  load(file = treeSigFiles[i])
+  
+  tree_sig_df_combined <- tree_sig_df_combined %>%
+    bind_rows(tree_sig_df)
+}
+
+#' ======================================================================
+#' Comparison Visualisations
+#' ----------------------------------------------------------------------
+
+gg_theme <- theme_bw() +
+  theme(panel.border = element_blank(),
+        axis.line = element_line(color = 'black'))
+
+cbp1 <- c("#e69f00", "#56b4e9", "#009e73", "#f0e442",
+          "#cc79a7", "#0072b2", "#d55e00", "#999999",
+          "#f27c7c", "#279a98", "#9a3f44", "#a53093",
+          "#4c5e66")
+
+```
+
+# Visualisations
+
+## Comparing proportion relative to parent vs relative to all
+```{r}
+#' Q-Q plots by ordering parent vs all
+qq_df <- tree_sig_df_combined %>%
+  dplyr::filter(statAll != 0) %>%
+  mutate(neglogp_all = -log(pvalAll, base=10)) %>%
+  arrange(dataset, hierarchy, neglogp_all) %>%
+  group_by(dataset, hierarchy) %>%
+  mutate(row_id = 1:n()) %>%
+  select(dataset,hierarchy, row_id, neglogp_all) %>%
+  left_join(
+    (tree_sig_df_combined %>%
+      dplyr::filter(statAll != 0) %>%
+      mutate(neglogp_parent = -log(pvalParent, base=10)) %>%
+      arrange(dataset, hierarchy, neglogp_parent) %>%
+      group_by(dataset, hierarchy) %>%
+      mutate(row_id = 1:n()) %>%
+      select(dataset,hierarchy, row_id, neglogp_parent)),
+    by=c("dataset"="dataset", "hierarchy"="hierarchy", "row_id"="row_id")
+    )
+
+ggplot(qq_df %>%
+         dplyr::filter(hierarchy %in% c("average", "hopach") &
+                  !(dataset %in% c("COVID-19 PBMC, Mathew 2020 - CD8nonNaive", 
+                                   "COVID-19 PBMC, Humblet-Baron 2020",
+                                   "COVID-19 T cells, De Biasi 2020 - CD8 - home_hosp",
+                                   "Anti-CTLA-4 and Anti-PD-1, Subrahmanyam 2018 - PD1 - home_hosp"))) %>%
+         mutate(hierarchy = case_when(
+           hierarchy == "average" ~ "Average-linkage Hierarchical Clustering",
+           hierarchy == "hopach" ~ "Hopach",
+           TRUE ~ hierarchy
+         ))) +
+  geom_point(aes(x=neglogp_all, y=neglogp_parent, color=hierarchy),
+             size=1.5) +
+  # geom_line(aes(x=neglogp_all, y=neglogp_parent, color=hierarchy))+
+  geom_abline(slope=1, intercept=0, linetype="dashed") +
+  facet_wrap(~dataset, scales="free", ncol=4) +
+  theme_bw() +
+  theme(strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  labs(x=TeX("-log_{10}(p-value) Proportion relative to All"),
+       y=TeX("-log_{10}(p-value) Proportion relative to Parent"),
+       col="Hierarchy Type") # Exported as 8 x 13 for paper
+
+```
+

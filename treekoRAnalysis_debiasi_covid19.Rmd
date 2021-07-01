@@ -1,0 +1,517 @@
+---
+title: "Visualisation"
+author: "Adam Chan"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    number_sections: yes
+    self_contained: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 3
+    # toc_float: yes
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=10)
+```
+
+# Run treekoR
+
+The dataset used in this analysis is the CD8 subset of the article:
+
+De Biasi, S., Meschiari, M., Gibellini, L. et al. Marked T cell activation, senescence, exhaustion and skewing towards TH17 in patients with COVID-19 pneumonia. Nat Commun 11, 3434 (2020). https://doi.org/10.1038/s41467-020-17292-4
+
+```{r readFiles}
+suppressPackageStartupMessages({
+  library(treekoR)
+  library(SingleCellExperiment)
+  library(ggtree)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(latex2exp)
+})
+
+data_folder <- "COVID-19 T cells, De Biasi 2020"
+data_panel <- "CD8"
+
+pos_class_name <- "COV"
+neg_class_name <- "CTR"
+
+#' Load Data
+#' Load SCE with FlowSOM Clustering 
+#' -------------------------------------------------------------------
+load(file="data/sce_debiasi_covid19_som100_CD8.RData")
+
+```
+
+```{r}
+exprs <- t(assay(sce, "exprs"))
+clusters <- colData(sce)$cluster_id
+classes <- colData(sce)$condition
+samples <- colData(sce)$sample_id
+
+#' ==================================================
+#' Compute significance for hierarchical trees
+#' --------------------------------------------------
+hierarchy_meths <- c("hopach", "average", "ward.D2","complete")
+
+tree_res_list <- lapply(hierarchy_meths,
+       function(x) {
+           clust_tree <- getClusterTree(exprs,
+                             clusters,
+                             hierarchy_method=x,
+                             scale_exprs=TRUE)
+            
+            tested_tree <- treekoR::testTree(phylo=clust_tree$clust_tree,
+                      clusters=clusters,
+                      samples=samples,
+                      classes=classes,
+                      pos_class_name=NULL,
+                      subjects=NULL,
+                      paired = FALSE)
+            
+            return(list(clust_tree=clust_tree, tested_tree=tested_tree))
+       })
+
+tree_sig_df <- lapply(tree_res_list, 
+       function(x) {
+           x$tested_tree$data
+       }) %>%
+    bind_rows() %>%
+    mutate(hierarchy = rep(hierarchy_meths, times=unlist(lapply(tree_res_list, 
+                                                                    function(x) {nrow(x$tested_tree$data)})))) %>%
+    dplyr::select(node, label, isTip, statAll, statParent, pvalAll, pvalParent,
+                    parent, clusters, hierarchy) %>%
+    dplyr::rename(c("parent_node"="parent", "child_leaf_nodes"="clusters")) %>%
+    mutate(parent_leaf_nodes = .[match(.[,"parent_node"] %>% pull, 
+                            .[,"node"] %>% pull), 
+                            "child_leaf_nodes"] %>% pull) %>% 
+    mutate(label = ifelse(is.na(label),
+                            node,
+                            label)) %>%
+    mutate(dataset = paste0(data_folder, " - ", data_panel))
+```
+
+## Figure 2c & 2d
+
+```{r}
+#' ==================================================
+#' Extract HOPACH results
+#' --------------------------------------------------
+
+plotInteractiveHeatmap(tree_res_list[[which(hierarchy_meths == "hopach")]]$tested_tree,
+                       clust_med_df = tree_res_list[[which(hierarchy_meths == "hopach")]]$clust_tree$median_freq,
+                       clusters=clusters)
+```
+
+
+```{r}
+prop_df <- getCellProp(phylo=tree_res_list[[which(hierarchy_meths == "hopach")]]$clust_tree$clust_tree,
+                       clusters=clusters,
+                       samples=samples,
+                       classes=classes)
+
+# De Biasi Figure Paper data
+CD8_fig_dat <- readxl::read_excel("data/debiasi_covid19_41467_2020_17292_MOESM4_ESM.xlsx",
+                                  sheet="Figure 3c",
+                                  skip=2) %>%
+  dplyr::rename(patient = "...1") %>%
+  dplyr::filter(!is.na(.[,2])) %>%
+  mutate(condition = ifelse(grepl("PATIENT", patient),
+                            "COV",
+                            "CTR"))
+
+## GGPlot themes
+cbp1 <- c("#e69f00", "#56b4e9","#cc79a7", "#009e73", "#f0e442",
+           "#0072b2", "#d55e00", "#999999",
+          "#f27c7c", "#279a98", "#9a3f44", "#a53093",
+          "#4c5e66")
+
+gg_theme <- theme_bw() +
+  theme(panel.border = element_blank(),
+        axis.line = element_line(color = 'black'))
+```
+
+
+## Figure 2e
+
+```{r}
+p_val_comp <- prop_df %>%
+    select(class, prop_parent_161, prop_all_161) %>%
+    dplyr::rename(condition=class,
+                  c("treekoR - Proportion to Parent"= "prop_parent_161",
+                    "treekoR - Proportion to All"= "prop_all_161")) %>%
+    tidyr::pivot_longer(!c("condition"), names_to="prop_name", values_to="prop_val") %>%
+    bind_rows(
+        CD8_fig_dat %>%
+            select(condition, `HLADR+CD38+ AMONG CD8 (%)`) %>%
+            dplyr::rename(prop_val = `HLADR+CD38+ AMONG CD8 (%)`) %>%
+            mutate(prop_name="De Biasi et al.")
+    ) %>%
+    group_by(prop_name) %>%
+    summarise(pval_t = t.test(prop_val ~ condition)$p.value,
+              pval_wilcox = wilcox.test(prop_val ~ condition)$p.value) %>%
+    tidyr::pivot_longer(!prop_name, names_to="test", values_to="pval")
+
+ggplot(p_val_comp,
+        aes(y=prop_name, x=-log(pval,10), fill=test, col=test)) +
+  geom_bar(stat="identity",
+            position = position_dodge()) +
+  gg_theme +
+  theme(legend.position="bottom") +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_fill_manual(labels=c("T-test", "Wilcox test"),values=alpha(lead(cbp1, n=2), 0.6)) +
+  scale_color_manual(labels=c("T-test", "Wilcox test"), values=lead(cbp1, n=2)) +
+  labs(x=TeX("-log_{10}(p-value)"), y="",
+        col="Test Used",
+        fill="Test Used")
+```
+
+## Figure 2f
+
+```{r}
+prop_df %>%
+    select(class, prop_parent_161, prop_all_161) %>%
+    dplyr::rename(condition=class,
+                  c("treekoR - Proportion to Parent"= "prop_parent_161",
+                    "treekoR - Proportion to All"= "prop_all_161")) %>%
+    tidyr::pivot_longer(!c("condition"), names_to="prop_name", values_to="prop_val") %>%
+    bind_rows(
+        CD8_fig_dat %>%
+            select(condition, `HLADR+CD38+ AMONG CD8 (%)`) %>%
+            dplyr::rename(prop_val = `HLADR+CD38+ AMONG CD8 (%)`) %>%
+            mutate(prop_name="De Biasi et al.",
+                    prop_val = prop_val/100)
+    ) %>%
+    ggplot(aes(x=condition, y=prop_val, col=condition, fill=condition)) +
+    geom_boxplot(outlier.size=-1, width=0.3) +
+    geom_jitter(alpha=0.75, width=0.2) +
+    facet_wrap(~factor(prop_name,levels=c("treekoR - Proportion to All", 
+                                          "De Biasi et al.", 
+                                          "treekoR - Proportion to Parent")), scales="free", ncol=2) +
+    gg_theme +
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          strip.background =element_blank(),
+          axis.line = element_line(size = 0.35),
+          legend.position = "bottom") +
+    scale_color_manual(labels=c("COVID", "Control"), values = cbp1) +
+    scale_fill_manual(labels=c("COVID", "Control"), values = alpha(cbp1,0.2)) +
+    labs(title="Comparison between proportion to all and proportion to parent",
+        subtitle="Proportions measured relative to parent cells per sample",
+        fill="Patient Outcome", 
+        col = "Patient Outcome",
+        y="Proportion",
+        x="")
+```
+
+# Cluster Marker Expression Density
+
+## Cluster 161
+
+Note: The sibling cluster of interest is cluster 161 (which is 95 & 97 combined) and the sibling is cluster 98 
+
+```{r}
+cells_data <- exprs %>%
+  as.data.frame() %>%
+  mutate(cluster = clusters)
+```
+
+
+```{r fig.width=10, fig.height=10}
+# clust_1, clust_2 are a single or vector value of strings containing the clusters of interest
+# clust_2 is the sibling of clust_1
+plotFacettedRidgelinePlot <- function(clust_1, clust_2) {
+  ### Density Ridgeline Plot
+  cells_data %>%
+    mutate(population = "whole") %>%
+    bind_rows(cells_data %>%
+                dplyr::filter(cluster %in% clust_1) %>%
+                mutate(population = stringr::str_interp("cluster_${clust_1}")),
+              cells_data %>%
+                dplyr::filter(cluster %in% c(clust_2)) %>%
+                mutate(population = stringr::str_interp("cluster_${clust_2} (${clust_1} sibling)"))) %>%
+    select(-cluster) %>%
+    pivot_longer(!population, names_to="variable", values_to="value") %>% 
+    ggplot() + 
+    ggridges::geom_density_ridges(aes(x=as.numeric(value), col=population, fill=population, y=population)) + 
+    facet_wrap(~variable, scales="free") +
+    # facet_wrap(~variable) +
+    labs(title=stringr::str_interp("Density of Cluster ${clust_1} vs. the rest")) +
+    scale_color_manual(values = cbp1) +
+    scale_fill_manual(values = alpha(cbp1,0.2)) +
+    gg_theme +
+    theme(strip.background = element_blank(),
+          axis.line.y = element_blank(),
+          axis.text.y = element_blank())
+}
+
+plotFacettedRidgelinePlot(c("95", "97"), "98")
+```
+
+# Benchmarking Files
+```{r eval=FALSE}
+hierarchy_meths <- c("hopach", "average")
+
+print("Generating hierarchical trees and testing...")
+
+tree_res_list <- lapply(hierarchy_meths,
+       function(x) {
+           clust_tree <- getClusterTree(exprs,
+                             clusters,
+                             hierarchy_method=x,
+                             scale_exprs=TRUE)
+            
+            tested_tree <- treekoR::testTree(phylo=clust_tree$clust_tree,
+                      clusters=clusters,
+                      samples=samples,
+                      classes=classes,
+                      pos_class_name=NULL,
+                      subjects=NULL,
+                      paired = FALSE)
+            
+            return(list(clust_tree=clust_tree, tested_tree=tested_tree))
+       })
+
+tree_sig_df <- lapply(tree_res_list, 
+       function(x) {
+           x$tested_tree$data
+       }) %>%
+    bind_rows() %>%
+    mutate(hierarchy = rep(hierarchy_meths, times=unlist(lapply(tree_res_list, 
+                                                                    function(x) {nrow(x$tested_tree$data)})))) %>%
+    dplyr::select(node, label, isTip, statAll, statParent, pvalAll, pvalParent,
+                    parent, clusters, hierarchy) %>%
+    dplyr::rename(c("parent_node"="parent", "child_leaf_nodes"="clusters")) %>%
+    mutate(parent_leaf_nodes = .[match(.[,"parent_node"] %>% pull, 
+                            .[,"node"] %>% pull), 
+                            "child_leaf_nodes"] %>% pull) %>% 
+    mutate(label = ifelse(is.na(label),
+                            node,
+                            label)) %>%
+    mutate(dataset = paste0(data_folder, " - ", data_panel))
+
+save(tree_sig_df,
+     file=file.path(data_folder,
+                    paste0("data\\processed\\hierarchy_sig_test_", 
+                           data_panel, 
+                           ".RData")))
+
+#' ==================================================
+#' Classification
+#' --------------------------------------------------
+print("Calculating proportions to parent and absolute proportions...")
+
+prop_df_list <- lapply(c("hopach", "average"),
+       function(x) {
+           clust_tree <- getClusterTree(exprs,
+                             clusters,
+                             hierarchy_method=x,
+                             scale_exprs=TRUE)
+            
+            prop_df <- getCellProp(phylo=clust_tree$clust_tree,
+                       clusters=clusters,
+                       samples=samples,
+                       classes=classes)
+            
+            return(list(prop_df=prop_df))
+       })
+
+save(prop_df_list,
+     file = file.path(data_folder,
+                      paste0("data\\processed\\hierarchy_props_", 
+                            data_panel, 
+                            ".RData")))
+
+library("mlr3")
+library("mlr3learners")
+library("mlr3filters")
+library("mlr3pipelines")
+library("paradox")
+library("mlr3tuning")
+library(cutpointr)
+
+# The dataframes loaded contain both the independent and dependent variables
+## Note the levels of the dependent variable have been sorted in reverse alphabetical order to align mlr3 behaviour with glmnet
+task0 <- TaskClassif$new(id="parent_prop_hc_avg",
+                        backend= prop_df_list[[1]]$prop_df %>%
+                            select(class, starts_with("prop_parent_")) %>%
+                            mutate_if(is.numeric, ~replace(., is.nan(.), 0)) %>%
+                            mutate(class = factor(class, levels=sort(c(neg_class_name, pos_class_name), decreasing=TRUE))),
+                        target="class")
+
+task1 <- TaskClassif$new(id="parent_prop_hc_avg_leaf",
+                         backend= prop_df_list[[1]]$prop_df %>%
+                            select(class, all_of(paste0("prop_parent_", unique(clusters)))) %>%
+                            mutate_if(is.numeric, ~replace(., is.nan(.), 0)) %>%
+                            mutate(class = factor(class, levels=sort(c(neg_class_name, pos_class_name), decreasing=TRUE))),
+                         target="class")
+
+task2 <- TaskClassif$new(id="abs_prop_leaf",
+                         backend= prop_df_list[[1]]$prop_df %>%
+                            select(class, all_of(paste0("prop_all_", unique(clusters)))) %>%
+                            mutate_if(is.numeric, ~replace(., is.nan(.), 0)) %>%
+                            mutate(class = factor(class, levels=sort(c(neg_class_name, pos_class_name), decreasing=TRUE))),
+                         target="class")
+
+task3 <- TaskClassif$new(id="abs_prop_hc_avg",
+                         backend= prop_df_list[[1]]$prop_df %>%
+                            select(class, starts_with("prop_all_")) %>%
+                            mutate_if(is.numeric, ~replace(., is.nan(.), 0)) %>%
+                            mutate(class = factor(class, levels=sort(c(neg_class_name, pos_class_name), decreasing=TRUE))),
+                         target="class")
+
+task4 <- TaskClassif$new(id="abs_prop_hopach",
+                         backend= prop_df_list[[2]]$prop_df %>%
+                            select(class, starts_with("prop_all_")) %>%
+                            mutate_if(is.numeric, ~replace(., is.nan(.), 0)) %>%
+                            mutate(class = factor(class, levels=sort(c(neg_class_name, pos_class_name), decreasing=TRUE))),
+                         target="class")
+
+task5 <- TaskClassif$new(id="parent_prop_hopach",
+                         backend=prop_df_list[[2]]$prop_df %>%
+                            select(class, starts_with("prop_parent_")) %>%
+                            mutate_if(is.numeric, ~replace(., is.nan(.), 0)) %>%
+                            mutate(class = factor(class, levels=sort(c(neg_class_name, pos_class_name), decreasing=TRUE))),
+                         target="class")
+
+#' Set classification models to be used
+#' --------------------------------------
+## Regular learners (can add more from https://mlr3book.mlr-org.com/list-learners.html)
+learners = c(
+  "classif.log_reg",
+  "classif.ranger", 
+  "classif.glmnet",
+  "classif.svm")
+learners = lapply(learners, lrn,
+                  predict_type = "prob", 
+                  predict_sets = c("train", "test"))
+
+## Set parameters for some learners
+## Configure permutation importance for random forest
+learners[[2]]$param_set$values = list(importance = "permutation")
+
+#' Set resampling method to be used
+#' --------------------------------------
+## Do Leave on out cross validation or repeated n-fold cross validation
+do_LOOCV <- FALSE
+
+if (do_LOOCV) {
+  n_reps = 1
+  n_folds = nrow(task0$data())
+  resampling = rsmp("cv",
+                    folds=nrow(task$data()))
+} else {
+  n_reps = 20
+  n_folds = 5
+  resampling = rsmp("repeated_cv",
+                    repeats=n_reps,
+                    folds=n_folds)
+}
+
+print("Benchmarking classification...")
+
+#' Run benchmark over all tasks and learners
+#' --------------------------------------
+design = benchmark_grid(
+  tasks = list(task0, task1, task2, task3, task4, task5),
+  learners = learners,
+  resamplings = resampling
+)
+bmr = benchmark(design,
+                store_models = TRUE)
+
+#' ===========================================
+#' AUC Performance results
+#' -------------------------------------------
+
+bmr_dt <- as.data.table(bmr) %>%
+  as_tibble()
+
+test_set_n <- unlist(lapply(bmr_dt$prediction, function(x) {
+  x$test %>% 
+    as.data.table %>% 
+    nrow}))
+
+train_set_n <- unlist(lapply(bmr_dt$prediction, function(x) { 
+  x$train %>% 
+    as.data.table %>% 
+    nrow}))
+
+
+getAdjustedPredictions <- function(x) {
+  #' x here is a data table with row_id, truth, response, prob.responder, prob.non.responsder
+  #' This function adds one column with the new predictions adjusting for cutoff
+  isErr <- FALSE
+  
+  tryCatch({
+    x[, prob.pos := get(paste0("prob.", pos_class_name))]
+    cp <- cutpointr(x, prob.pos, truth, 
+                    direction=">=",
+                    pos_class= pos_class_name,
+                    method = minimize_metric, metric = roc01)$optimal_cutpoint
+    x[, response_adj := ifelse(get(paste0("prob.",pos_class_name)) >= cp, pos_class_name, neg_class_name)]
+    x[, cutoff_adj := cp]
+  },
+  error=function(cond) {
+    message(cond)
+    isErr <<- TRUE
+  })
+  if (isErr) { 
+    x[, response_adj := response] 
+    x[, cutoff_adj := NA]}
+  return(x)
+}
+
+allPredictions_df <- bind_rows(lapply(bmr_dt$prediction, # Extract prediction probabilities for test set and calculate AUC
+                                      function(x) { x$test %>% 
+                                          as.data.table %>%
+                                          getAdjustedPredictions()
+                                      })) %>%
+  mutate(iteration = bmr_dt$iteration %>%
+           rep(times = test_set_n),
+         cv_loop = ceiling(bmr_dt$iteration/n_folds) %>%
+           rep(times = test_set_n),
+         task_id = unlist(lapply(bmr_dt$task, function(x) {x$id})) %>%
+           rep(times = test_set_n), 
+         learner_id = unlist(lapply(bmr_dt$learner, function(x) {x$id}))%>%
+           rep(times = test_set_n),
+         test_samp = "test_set"
+  ) %>%
+  mutate(correct_bool = ifelse(truth == response_adj, 1, 0)) %>%
+  bind_rows(bind_rows(lapply(bmr_dt$prediction, 
+                             function(x) { x$train %>% 
+                                 as.data.table %>%
+                                 getAdjustedPredictions()
+                             })) %>%
+              mutate(iteration = bmr_dt$iteration %>%
+                       rep(times = train_set_n),
+                     cv_loop = ceiling(bmr_dt$iteration/n_folds) %>%
+                       rep(times = train_set_n),
+                     task_id = unlist(lapply(bmr_dt$task, function(x) {x$id})) %>%
+                       rep(times = train_set_n), 
+                     learner_id = unlist(lapply(bmr_dt$learner, function(x) {x$id}))%>%
+                       rep(times = train_set_n),
+                     test_samp = "train_set"
+              ) %>%
+              mutate(correct_bool = ifelse(truth == response_adj, 1, 0))) %>%
+  select(-prob.pos) %>%
+  mutate(dataset = data_folder,
+         data_panel_name = ifelse(exists("data_panel"),
+                                  data_panel,
+                                  NA)) %>%
+  dplyr::rename(prob.pos = paste0("prob.", pos_class_name),
+                prob.neg = paste0("prob.", neg_class_name))
+
+print("Saving predictions...")
+save(allPredictions_df,
+     file=file.path(data_folder,
+                    paste0("data//processed//benchmark_allPredictions_", 
+                           data_panel, ".RData")))
+```
+

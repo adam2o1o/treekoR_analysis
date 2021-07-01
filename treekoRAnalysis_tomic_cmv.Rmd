@@ -1,0 +1,263 @@
+---
+title: "Visualisation"
+author: "Adam Chan"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    number_sections: yes
+    self_contained: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 3
+    # toc_float: yes
+    code_folding: hide
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=10, fig.height=9, message=FALSE)
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(treekoR)
+  library(SingleCellExperiment)
+  library(ggtree)
+  library(dplyr)
+  
+  library(tidyr)
+  library(stringr)
+  library(ggplot2)
+  library(ggsignif)
+})
+
+data_folder <- "CMV, Davis 2019"
+data_panel <- ""
+
+pos_class_name <- "positive"
+neg_class_name <- "negative"
+
+# Plot marker densities
+gg_theme <- theme_bw() +
+  theme(panel.border = element_blank(),
+        axis.line = element_line(color = 'black'))
+
+cbp1 <- c("#e69f00", "#56b4e9","#cc79a7", "#009e73", "#f0e442",
+           "#0072b2", "#d55e00", "#999999",
+          "#f27c7c", "#279a98", "#9a3f44", "#a53093",
+          "#4c5e66")
+```
+
+# Run treekoR
+
+```{r}
+#' Load Data
+#' Load SCE with FlowSOM Clustering 
+#' -------------------------------------------------------------------
+load(file="data/sce_tomic_cmv_gated.RData")
+
+exprs <- t(assay(sce, "exprs"))
+clusters <- colData(sce)$cluster_id
+classes <- colData(sce)$condition
+samples <- as.character(colData(sce)$sample_id)
+```
+
+
+```{r}
+hierarchy_meths <- c("hopach")
+
+print("Generating hierarchical trees and testing...")
+
+tree_res_list <- lapply(hierarchy_meths,
+       function(x) {
+           clust_tree <- getClusterTree(exprs,
+                             clusters,
+                             hierarchy_method=x,
+                             scale_exprs=TRUE)
+            
+            tested_tree <- treekoR::testTree(phylo=clust_tree$clust_tree,
+                      clusters=clusters,
+                      samples=samples,
+                      classes=classes,
+                      pos_class_name=NULL,
+                      subjects=NULL,
+                      paired = FALSE)
+            
+            return(list(clust_tree=clust_tree, tested_tree=tested_tree))
+       })
+
+tree_sig_df <- lapply(tree_res_list, 
+       function(x) {
+           x$tested_tree$data
+       }) %>%
+    bind_rows() %>%
+    mutate(hierarchy = rep(hierarchy_meths, times=unlist(lapply(tree_res_list, 
+                                                                    function(x) {nrow(x$tested_tree$data)})))) %>%
+    dplyr::select(node, label, isTip, statAll, statParent, pvalAll, pvalParent,
+                    parent, clusters, hierarchy) %>%
+    dplyr::rename(c("parent_node"="parent", "child_leaf_nodes"="clusters")) %>%
+    mutate(parent_leaf_nodes = .[match(.[,"parent_node"] %>% pull, 
+                            .[,"node"] %>% pull), 
+                            "child_leaf_nodes"] %>% pull) %>% 
+    mutate(label = ifelse(is.na(label),
+                            node,
+                            label)) %>%
+    mutate(dataset = paste0(data_folder, " - ", data_panel))
+
+print("Calculating proportions to parent and absolute proportions...")
+
+prop_df_list <- lapply(c("hopach", "average"),
+       function(x) {
+           clust_tree <- getClusterTree(exprs,
+                             clusters,
+                             hierarchy_method=x,
+                             scale_exprs=TRUE)
+            
+            prop_df <- getCellProp(phylo=clust_tree$clust_tree,
+                       clusters=clusters,
+                       samples=samples,
+                       classes=classes)
+            
+            return(list(prop_df=prop_df))
+       })
+```
+
+```{r eval=F}
+plotInteractiveHeatmap(tree_res_list[[1]]$tested_tree,
+                       clust_med_df = tree_res_list[[1]]$clust_tree$median_freq,
+                       clusters=clusters)
+```
+
+## Figure 2a
+
+```{r}
+# Plot scatterplot with parent vs. all proportions
+max_val <- max(abs(c(tree_res_list[[1]]$tested_tree$data$statAll, tree_res_list[[1]]$tested_tree$data$statParent)))
+
+g1 <- ggplot(tree_res_list[[1]]$tested_tree$data %>% # Use node name where label is null
+               mutate(label = ifelse(is.na(label),node,label)),
+             aes(x = statAll, y = statParent, shape=isTip, col=isTip,
+                 data_id=label, tooltip=label))+
+  geom_point() + 
+  # geom_point(size=1.5)+
+  geom_hline(yintercept = 0, linetype="dashed")+
+  geom_vline(xintercept = 0, linetype="dashed")+
+  coord_equal(xlim=c(-max_val,max_val),ylim=c(-max_val,max_val))+
+  labs(x = "Statistic: Relative to all",y = "Statistic: Relative to parent",
+       title = "Significance between patient condition using prop. to parent vs prop. to all",
+       subtitle = paste0("Dataset - ", 
+                         data_folder,
+                         ifelse(exists("data_panel"),
+                                paste0(" - ", data_panel),
+                                ""))) +
+  theme_bw() +
+  theme(panel.border = element_blank(),
+        axis.line = element_line(color = 'black'),
+        legend.position = "top") +
+  scale_color_manual(values=c("grey10", "grey50"))
+
+# Export as 6x8
+g1
+```
+
+
+## Figure 2b
+
+The two populations of interest are cluster 42 (sibling: cluster 54) and cluster 122 (sibling: cluster 64). Their relation to CMV titre result is picture below
+
+```{r}
+prop_df_list[[1]]$prop_df %>%
+  select(contains(c("_42", "_122")), class, sample) %>%
+  gather(variable, value, -c(class, sample)) %>%
+  # mutate(variable = factor(variable, levels = apply(expand.grid(c("prop_all", "prop_parent"), c("_19","_60","_126")), 1, paste0, collapse=""))) %>%
+  mutate(variable = factor(variable, 
+                           levels = sapply(c("prop_all", "prop_parent"), 
+                                           function(x) paste0(x, c("_42", "_122"))) %>% 
+                             as.vector)) %>%
+  ggplot(aes(x=class, y=value, col=class, fill=class)) +
+  geom_boxplot(outlier.size=-1, width=0.3) +
+  geom_jitter(alpha=0.75, width=0.2) +
+  facet_wrap(~variable, scales="free", nrow=2) +
+  gg_theme +
+  geom_signif(
+    color="grey40",
+    comparisons = list(c("positive", "negative")),
+    margin_top=0.15,
+    map_signif_level = function(p) sprintf("p = %.2g", p),
+    test = "t.test"
+  ) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.background =element_blank(),
+        axis.line = element_line(size = 0.35),
+        legend.position = "bottom") +
+  scale_color_manual(values = cbp1) +
+  scale_fill_manual(values = alpha(cbp1,0.2)) +
+  labs(title="Comparison between proportion to all and proportion to parent",
+       subtitle="Proportions measured relative to parent cells per sample",
+       fill="Patient Outcome", 
+       col = "Patient Outcome",
+       y="Proportion")
+```
+
+
+For each of the panels, the densities of the tranformed (arcsinh) marker expression for each cluster of interest have been plotted. The density marked "whole" represents the marker expression of all the cells combined, and the other densities represent the marker expression for all the cells in the corresponding cluster.
+
+# Cluster Marker Expression Density
+
+## Cluster 42
+```{r}
+set.seed(12)
+idx <- sample.int(ncol(sce), 1e5)
+
+clust_vals <- c("42", "54")
+
+cells_data <- exprs %>%
+  as.data.frame() %>%
+  mutate(cluster = clusters) %>%
+  slice(idx)
+```
+
+
+```{r fig.width=10, fig.height=10}
+# clust_1, clust_2 are a single or vector value of strings containing the clusters of interest
+# clust_2 is the sibling of clust_1
+plotFacettedRidgelinePlot <- function(clust_1, clust_2) {
+  ### Density Ridgeline Plot
+  cells_data %>%
+    mutate(population = "whole") %>%
+    bind_rows(cells_data %>%
+                dplyr::filter(cluster %in% clust_1) %>%
+                mutate(population = stringr::str_interp("cluster_${clust_1}")),
+              cells_data %>%
+                dplyr::filter(cluster %in% c(clust_2)) %>%
+                mutate(population = stringr::str_interp("cluster_${clust_2} (${clust_1} sibling)"))) %>%
+    select(-cluster) %>%
+    pivot_longer(!population, names_to="variable", values_to="value") %>% 
+    ggplot() + 
+    ggridges::geom_density_ridges(aes(x=as.numeric(value), col=population, fill=population, y=population)) + 
+    facet_wrap(~variable, scales="free") +
+    # facet_wrap(~variable) +
+    labs(title=stringr::str_interp("Density of Cluster ${clust_1} vs. the rest")) +
+    scale_color_manual(values = cbp1) +
+    scale_fill_manual(values = alpha(cbp1,0.2)) +
+    gg_theme +
+    theme(strip.background = element_blank(),
+          axis.line.y = element_blank(),
+          axis.text.y = element_blank())
+}
+
+plotFacettedRidgelinePlot("42", "54")
+```
+
+
+## Cluster 122 (72 & 73)
+
+Note: The sibling cluster of interest is cluster 122 which is 72 & 73 combined) and the sibling is just clusters 64
+
+
+```{r fig.width=10, fig.height=10}
+plotFacettedRidgelinePlot(c("72","73"), "64")
+```

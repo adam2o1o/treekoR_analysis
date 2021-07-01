@@ -1,0 +1,225 @@
+---
+title: "Comparison of Hierarchical Parent Proportion Tests"
+author: "Adam Chan"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    number_sections: yes
+    self_contained: yes
+    theme: spacelab
+    toc: yes
+    toc_depth: 3
+    # toc_float: yes
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{css}
+.main-container {
+  max-width: 80%;
+}
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=9)
+knitr::opts_knit$set(root.dir = "C:/Users/acha5354/Desktop/New Folder/{SW}/PhD/Manuscripts/200805 Parent Proportion Paper/Code")
+```
+
+# Data Loading
+The following datasets were used in this analysis:
+
+CyTOF:
+
+- Age Chronic Inflammation, Shen-Orr 2016 <br>
+1036209 cells from 29 samples
+Predicting young/old from 
+
+- Anti-CTLA-4 and Anti-PD-1, Subrahmanyam 2018 <br>
+7264780 cells from 24 samples
+Predicting response/nonresponse to treatment
+
+- Anti-PD-1, Kreig 2018 <br>
+85715 cells from 20 samples
+Predicting response/nonresponse to treatment
+
+- Breast Cancer, Wagner 2019 <br>
+855914 cells from 194 samples
+Predicting tumor/non-tumor breast cancer samples
+
+- CMV, Davis 2019 <br>
+18153877 cells from 69 samples
+Predicting positive/negative result from CMV titer in flu vaccine patients
+
+- COVID-19 Whole blood CyTOF, Geanon 2021
+4747543 cells from 21 hospitalized covid-19 patients and healthy controls 
+
+Flow Cytometry:
+
+- AML, FlowCAP-II 2013 <br>
+55711535 cells from 359 samples
+Predicting aml/normal patients
+
+- COVID-19 PBMC, Humblet-Baron 2020 <br>
+6510011 cells from 49 patients (6 health, 23 mild-to-moderate, 20 severe) samples
+Predicting mild vs severe COVID-19 through PBMC immune profile
+
+- COVID-19 CD4 & CD8 T Cells, De Biasi 2020 <br>
+12 Healthy controls and 19 covid patients
+
+- COVID-19 CD8 Non Naive, Mathew 2020 <br>
+54 healthy donors and 114 covid patients. Analysed 60% of the original
+cells which amounted to 11,591,741. Predicting between recovered donors
+and healthy donors
+
+- MS HSCT, Ma 2020 <br>
+Predicting between relapse and non-relapse patients recovering from
+stem cell transplant
+
+scRNA-seq:
+- Melanoma, Sade-Feldman 2019
+
+```{r}
+#' Parent proportion test scripts
+#' This script is to summarise results from the treeParentProportionTest.R Scripts
+
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(gridExtra)
+  library(ggnewscale)
+  library(cowplot)
+})
+
+parClassificationFiles <- list.files("data/benchmarking_data/classification",
+                                     full.names = TRUE)
+
+load(file = parClassificationFiles[1])
+
+parent_classif_df_combined <- allPredictions_df 
+
+for (i in 2:length(parClassificationFiles)){
+  load(file = parClassificationFiles[i])
+  
+  parent_classif_df_combined <- parent_classif_df_combined %>%
+    bind_rows(allPredictions_df)
+}
+
+#' ======================================================================
+#' Comparison Visualisations
+#' ----------------------------------------------------------------------
+
+gg_theme <- theme_bw() +
+  theme(panel.border = element_blank(),
+        axis.line = element_line(color = 'black'))
+
+cbp1 <- c("#e69f00", "#56b4e9", "#009e73", "#f0e442",
+          "#cc79a7", "#0072b2", "#d55e00", "#999999",
+          "#f27c7c", "#279a98", "#9a3f44", "#a53093",
+          "#4c5e66")
+
+```
+
+# Visualisations
+## Boxplot of Balanced Accuracy
+Side-by-side cell proportions and proportion to parent
+```{r fig.width=13, fig.height=6}
+bal_acc_df <- parent_classif_df_combined %>%
+    mutate(dataset=ifelse(data_panel_name !="", paste(dataset, data_panel_name, sep=" - "), dataset)) %>%
+    group_by(dataset, data_panel_name, task_id, learner_id, test_samp, iteration, cv_loop, truth) %>%
+    summarise(bal_acc = mean(correct_bool), .groups="drop") %>%
+    group_by(dataset, data_panel_name, task_id, learner_id, test_samp, iteration, cv_loop) %>%
+    summarise(bal_acc = mean(bal_acc), .groups="drop") %>%
+    # Average balance accuracies within each CV Loop
+    group_by(dataset, data_panel_name, task_id, learner_id, test_samp, cv_loop) %>%
+    summarise(bal_acc = mean(bal_acc), .groups="drop") 
+
+fun_mean <- function(x){
+    return(data.frame(y=mean(x),label=round(mean(x,na.rm=T),2)))
+}
+
+# Means
+bal_acc_means <- bal_acc_df %>%
+  dplyr::filter(task_id %in% c("abs_prop_hc_avg", "parent_prop_hopach", "parent_prop_hc_avg") &
+                  test_samp == "test_set" &
+                  learner_id %in% c("classif.ranger")) %>% 
+  mutate(dataset=ifelse(data_panel_name !="", paste(dataset, data_panel_name, sep=" - "), dataset)) %>%
+  group_by(dataset, task_id, learner_id, test_samp) %>% 
+  summarise(mean_bal_acc = mean(bal_acc), .groups="drop") %>% 
+  spread(key=task_id, value=mean_bal_acc) %>%
+  rowwise() %>%
+  mutate(parent_max = max(parent_prop_hc_avg, parent_prop_hopach)) %>%
+  mutate(all_parent_diff = abs_prop_hc_avg - parent_max) %>%
+  arrange(desc(all_parent_diff))
+
+
+p <- ggplot(data = bal_acc_df %>%
+              dplyr::filter(task_id %in% c("abs_prop_hc_avg", "parent_prop_hopach", "parent_prop_hc_avg") &
+                              test_samp == "test_set" &
+                              learner_id %in% c("classif.ranger"))%>%
+              mutate(task_id = ifelse(task_id == "abs_prop_hc_avg",
+                          "Prop. relative to all",
+                          ifelse(task_id == "parent_prop_hc_avg", 
+                                 "Prop. relative to parent (using Hierarchical Clustering)",
+                                 "Prop. relative to parent (using HOPACH)"))) ,
+            aes(x=dataset, y=bal_acc, 
+                fill=task_id, col=task_id)) +
+  geom_boxplot() +
+  labs(title=paste0("Comparative Boxplot of Balanced Accuracy"),
+       subtitle=paste0(5, "-fold CV with ", 20, " reps")) +
+  scale_color_manual(values = cbp1) +
+  scale_fill_manual(values = alpha(cbp1,0.3)) +
+  gg_theme +
+  theme(axis.text.x = element_text(angle = 60, vjust = 1, hjust=1,
+                                   size=7),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  labs(y="Balanced Accuracy",
+       x="Dataset",
+       fill="Features used",
+       col="Features used")
+
+# Rank of mean and variance
+classif_res_rank <- bal_acc_df %>%
+  mutate(dataset=ifelse(data_panel_name !="", paste(dataset, data_panel_name, sep=" - "), dataset)) %>%
+  dplyr::filter(task_id %in% c("abs_prop_hc_avg", "parent_prop_hopach", "parent_prop_hc_avg") &
+                  test_samp == "test_set" &
+                  learner_id %in% c("classif.ranger")) %>%
+  mutate(task_id = ifelse(task_id == "abs_prop_hc_avg",
+              "Prop. relative to all",
+              ifelse(task_id == "parent_prop_hc_avg", 
+                      "Prop. relative to parent (using Hierarchical Clustering)",
+                      "Prop. relative to parent (using HOPACH)"))) %>% 
+  group_by(dataset, task_id, learner_id, test_samp) %>% 
+  summarise(mean_bal_acc = mean(bal_acc),
+            var_bal_acc = var(bal_acc), .groups="drop") %>%
+  group_by(dataset,learner_id, test_samp) %>%
+  mutate(`CV Balanced Accuracy Mean Rank` = rank(-mean_bal_acc, ties.method= "max"),
+         `CV Balanced Accuracy Variance Rank` = rank(var_bal_acc, ties.method= "max")) %>%
+  ungroup() %>%
+  select(-mean_bal_acc, -var_bal_acc) %>%
+  pivot_longer(c(`CV Balanced Accuracy Mean Rank`, `CV Balanced Accuracy Variance Rank`), 
+                names_to="var", values_to="res_rank")
+
+pr <- ggplot(classif_res_rank) +
+  geom_point(aes(x=dataset, y=task_id, 
+                  size=factor(res_rank, levels=c(3,2,1)),
+                  col=factor(res_rank, levels=c(3,2,1)))) +
+  facet_wrap(~var, nrow=2) +
+  theme_bw() +
+  theme(axis.text.x = element_blank(),
+        strip.background = element_blank()) +
+  scale_color_manual(values=alpha(c("#C2FCF7", "#85BDBF", "#57737A"), 0.75)) +
+  labs(size="Rank", col="Rank",
+       x="", y="Features Used")
+
+# Export as 9x13 for treekoR paper
+plot_grid(pr, p,
+          nrow=2,
+          align="v",
+          axis="lr",
+          rel_heights=c(0.85,2))
+```
+
