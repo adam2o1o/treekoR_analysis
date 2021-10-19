@@ -24,7 +24,6 @@ editor_options:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, fig.width=9)
-knitr::opts_knit$set(root.dir = "C:/Users/acha5354/Desktop/New Folder/{SW}/PhD/Manuscripts/200805 Parent Proportion Paper/Code")
 ```
 
 # Data Loading

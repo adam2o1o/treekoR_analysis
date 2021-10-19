@@ -19,6 +19,220 @@ editor_options:
 knitr::opts_chunk$set(echo = TRUE, fig.width=10, fig.height=9, message=FALSE)
 ```
 
+# Data Preprocessing
+
+Original data and .fcs files can be found at: https://www.immport.org/shared/study/SDY478
+
+```{r eval=FALSE}
+library(CATALYST)
+
+library(flowCore)
+library(flowViz)
+library(ggplot2)
+library(SingleCellExperiment)
+
+library(dplyr)
+library(tidyr)
+library(janitor)
+library(readxl)
+
+### Get sample information ---------------------------------
+samp_dat <- read.table("CMV, Davis 2019\\data\\SDY478-DR34_Subject_2_CyTOF_result.txt", sep="\t") %>%
+  row_to_names(row_number = 1) %>%
+  clean_names() %>%
+  drop_na()
+
+biosample <- read.table("CMV, Davis 2019\\data\\biosample.txt", sep="\t") %>%
+  row_to_names(row_number = 1)
+
+lab_test <- read.table("CMV, Davis 2019\\data\\lab_test.txt", sep="\t") %>%
+  row_to_names(row_number = 1)
+
+fcs_md <- samp_dat %>%
+  left_join(
+    lab_test %>% 
+      dplyr::filter(NAME_REPORTED == "CMV Ab") %>%
+      mutate(CMV_STATUS = ifelse(RESULT_VALUE_REPORTED > 1, "positive", "negative")) %>%
+      left_join(biosample %>%
+                  select(BIOSAMPLE_ACCESSION, SUBJECT_ACCESSION),
+                by="BIOSAMPLE_ACCESSION"),
+    by=c("subject_accession" = "SUBJECT_ACCESSION")
+    ) %>%
+  dplyr::filter(!is.na(CMV_STATUS)) %>%
+  clean_names() %>%
+  dplyr::rename(condition = cmv_status)
+
+## Read in data
+# Only read in files for samples with associated CMV_STATUS
+fcsFiles <- list.files('CMV, Davis 2019\\data\\CyTOF_result',
+                       pattern=".fcs",
+                       recursive = TRUE,
+                       full.names = TRUE)[list.files('CMV, Davis 2019\\data\\CyTOF_result',
+                                                     pattern=".fcs",
+                                                     recursive = TRUE) %in% fcs_md[["file_name"]]]
+
+fcs_raw <- read.flowSet(fcsFiles, 
+                        transformation = FALSE, 
+                        truncate_max_range = FALSE)
+
+## Subsample cells
+fcs_raw2 <- fsApply(fcs_raw, function(x){
+  set.seed(12)
+  samp_ids <- sample.int(nrow(x), nrow(x)*0.75)
+  x[samp_ids,]
+})
+
+### Manually gate for singlets ------------------------------
+# Attempting to follow https://static-content.springer.com/esm/art%3A10.1038%2Fs41591-019-0381-y/MediaObjects/41591_2019_381_MOESM1_ESM.pdf
+biexpTrans <- biexponentialTransform(a=50, b=1.45, c=50, d=1, f=0, w=0)
+
+## Gate cells
+autoplot(transform(fcs_raw2[[1]],
+                   `(Ce140)Dd`=biexpTrans(`(Ce140)Dd`),
+                   `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`)), 
+                   "(Ce140)Dd", 
+                   "(Ir191)Dd",
+         bins = 200)
+
+recGate1<-rectangleGate("(Ce140)Dd"=c(-0.5,1.5),"(Ir191)Dd"=c(2,3.45))
+filters1<-filters(list(recGate1))
+xyplot(`(Ir191)Dd` ~ `(Ce140)Dd`
+       ,data=transform(fcs_raw2[[1]], 
+                       `(Ce140)Dd`=biexpTrans(`(Ce140)Dd`),
+                       `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`))
+       ,filter=filters1
+       ,stat=TRUE
+       ,margin=FALSE
+       ,checkName=FALSE
+)    
+
+fcs_raw3_filt <- flowCore::filter(transform(fcs_raw2,
+                                            `(Ce140)Dd`=biexpTrans(`(Ce140)Dd`),
+                                            `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`)),
+                                  recGate1)
+
+fcs_raw3 <- Subset(fcs_raw2, fcs_raw3_filt)
+
+## Gate intact cells
+autoplot(transform(fcs_raw3[[1]], 
+                   `(Ir193)Dd`=biexpTrans(`(Ir193)Dd`),
+                   `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`)), 
+         "(Ir193)Dd", 
+         "(Ir191)Dd",
+         bins = 200)
+
+recGate1<-rectangleGate("(Ir193)Dd"=c(2.75,3.25),"(Ir191)Dd"=c(2.4,3.))
+filters1<-filters(list(recGate1))
+xyplot(`(Ir191)Dd` ~ `(Ir193)Dd`
+       ,data=transform(fcs_raw3[[1]], 
+                       `(Ir193)Dd`=biexpTrans(`(Ir193)Dd`),
+                       `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`))
+       ,filter=filters1
+       ,stat=TRUE
+       ,margin=FALSE
+       ,checkName=FALSE
+)    
+
+fcs_raw3_filt <- flowCore::filter(transform(fcs_raw3,
+                                            `(Ir193)Dd`=biexpTrans(`(Ir193)Dd`),
+                                            `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`)),
+                                  recGate1)
+
+fcs_raw3 <- Subset(fcs_raw3, fcs_raw3_filt)
+
+## Gate intact singlets
+autoplot(transform(fcs_raw3[[1]], 
+                   `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`)), 
+         "Cell_length", 
+         "(Ir191)Dd",
+         bins = 200)
+
+recGate1<-rectangleGate("Cell_length"=c(0,52),"(Ir191)Dd"=c(2.4,3.))
+filters1<-filters(list(recGate1))
+xyplot(`(Ir191)Dd` ~ `Cell_length`
+       ,data=transform(fcs_raw3[[1]], 
+                       `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`))
+       ,filter=filters1
+       ,stat=TRUE
+       ,margin=FALSE
+       ,checkName=FALSE
+)    
+
+fcs_raw3_filt <- flowCore::filter(transform(fcs_raw3,
+                                            `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`)),
+                                  recGate1)
+
+fcs_raw3 <- Subset(fcs_raw3, fcs_raw3_filt)
+
+## Gate live intact cells
+biexpTrans2 <- biexponentialTransform(a=20, b=1, c=1, d=1, f=0, w=0)
+autoplot(transform(fcs_raw3[[1]], 
+                   `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`),
+                   `(In115)Dd`=biexpTrans2(`(In115)Dd`)), 
+         "(In115)Dd", 
+         "(Ir191)Dd",
+         bins = 200)
+
+recGate1<-rectangleGate("(In115)Dd"=c(-2,-1),"(Ir191)Dd"=c(2.4,3.))
+filters1<-filters(list(recGate1))
+xyplot(`(Ir191)Dd` ~ `(In115)Dd`
+       ,data=transform(fcs_raw3[[1]], 
+                       `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`),
+                       `(In115)Dd`=biexpTrans2(`(In115)Dd`))
+       ,filter=filters1
+       ,stat=TRUE
+       ,margin=FALSE
+       ,checkName=FALSE
+)    
+
+fcs_raw3_filt <- flowCore::filter(transform(fcs_raw3, 
+                                            `(Ir191)Dd`=biexpTrans(`(Ir191)Dd`),
+                                            `(In115)Dd`=biexpTrans2(`(In115)Dd`)),
+                                  recGate1)
+
+fcs_raw3 <- Subset(fcs_raw3, fcs_raw3_filt)
+# sum(fsApply(fcs_raw3, nrow))
+# sum(fsApply(fcs_raw2, nrow))
+
+### Get marker information ----------------------------------
+pregating_channels <- c("Bead", "DNA1", "DNA2", "Dead", "Cell_length")
+lineage_channels <- c("CD57", "CD19", "CD4", "CD8", "IgD", "CD11c", "CD16", "CD3", 
+                      "CD38", "CD27", "CD14", "CXCR5", "CCR7", "CD45RA", "CD20", 
+                      "CD127", "CD33", "CD28", "CD161", "TCRgd", "CD123", "CD56", 
+                      "HLADR", "CD25")
+instrument_channels <- c("Time", "Cell_length")
+
+fcs_panel <- pData(parameters(fcs_raw[[1]])) %>%
+  select(name, desc) %>%
+  mutate(marker_class = ifelse(desc %in% lineage_channels, 
+                               "type", 
+                               ifelse(desc %in% pregating_channels | is.na(desc), 
+                                      "none",
+                                      "state")))
+
+### Compile SingleCellExperiment ---------------------------
+#' Applied arcsinh transform with cofactor 5
+sce <- prepData(x=fcs_raw3, panel=fcs_panel, md=fcs_md,
+                cofactor = 5,
+                panel_cols = list(channel="name",
+                                  antigen="desc"),
+                md_cols = list(file="file_name",
+                               id="subject_accession",
+                               factors=c("condition", "race", "gender", "subject_age", 
+                                         "result_value_reported"))
+)
+
+assay(sce, "counts") <- NULL # To save some space
+
+### Apply FlowSOM clustering ------------------------------
+sce <- cluster(sce, features = "type",
+               xdim = 10, ydim = 10, maxK = 20,
+               verbose = FALSE, seed = 1)
+
+save(sce, file="data/sce_tomic_cmv_gated.RData")
+```
+
+
 
 ```{r}
 suppressPackageStartupMessages({

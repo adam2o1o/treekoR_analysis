@@ -1,0 +1,248 @@
+---
+title: "treekoR p-value Comparison"
+author: "Adam Chan, Ellis Patrick"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    number_sections: yes
+    self_contained: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 3
+    # toc_float: yes
+    code_folding: hide
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=10, fig.height=9, message=FALSE)
+```
+
+# Load Data
+
+```{r}
+#' ========================================================
+#' Compare treekoR, GLMM, edgeR p-values
+#' --------------------------------------------------------
+
+suppressPackageStartupMessages({
+    library(treekoR)
+    library(SingleCellExperiment)
+    library(ggtree)
+    library(dplyr)
+    library(CATALYST)
+    library(diffcyt)
+    library(ggplot2)
+  
+    library(edgeR)
+    library(lme4)
+    library(multcomp)
+    library(latex2exp)
+    library(GGally)
+})
+
+
+data_folder <- "COVID-19 T cells, De Biasi 2020"
+data_panel <- "CD4"
+
+pos_class_name <- "COV"
+neg_class_name <- "CTR"
+
+#' Load Data
+#' Load SCE with FlowSOM Clustering 
+#' -------------------------------------------------------------------
+load(file="data/sce_debiasi_covid19_som100_CD8.RData")
+
+exprs <- t(assay(sce, "exprs"))
+clusters <- colData(sce)$cluster_id
+classes <- colData(sce)$condition
+samples <- colData(sce)$sample_id
+```
+
+# Run Tests
+
+Run tests using treekoR on %parent and %total for each cell type. Also run tests using GLMM and edgeR as it is run in diffcyt differential abundance analysis. In order to have the equivalent test for %parent in GLMM and edgeR, the code had to be altered slightly.
+
+```{r}
+clust_tree <- getClusterTree(exprs,
+                             clusters,
+                             hierarchy_method="hopach")
+phylo <- clust_tree$clust_tree
+
+t <- treekoR:::findChildren(ggtree(phylo, branch.length = "none"))
+td <- t$data
+
+tested_tree <- treekoR::testTree(phylo=clust_tree$clust_tree,
+                                 clusters=clusters,
+                                 samples=samples,
+                                 classes=classes,
+                                 pos_class_name="COV")
+
+tree_sig_df <- tested_tree$data
+
+numParent <- NULL
+numNode <- NULL
+for (i in seq_len(nrow(td))) {
+    childClusters <- td[i, "clusters"][[1]][[1]]
+    parent <- td[i, "parent"][[1]]
+    parentClusters <- td[td$node == parent, "clusters"][[1]][[1]]
+    numParent <- rbind(numParent, tapply(clusters %in% parentClusters,
+                                         samples, sum))
+    numNode <- rbind(numNode, tapply(clusters %in% childClusters, samples,
+                                     sum))
+}
+
+#' GLMM
+#' -------------
+
+glmm_p_vals <- data.frame(matrix(nrow=nrow(numNode), ncol=4))
+colnames(glmm_p_vals) <- c("glmm_coef_total", "glmm_p_val_total",
+                           "glmm_coef_parent", "glmm_p_val_parent")
+
+n_cells_smp <- colSums(numNode[tree_sig_df %>% filter(isTip) %>% pull(node),])
+
+experiment_info <- metadata(sce)$experiment_info
+contrast <- t(createContrast(c(0, 1)))
+
+formula <- createFormula(experiment_info, 
+                         cols_fixed="condition", 
+                         cols_random = "sample_id")
+
+
+for (i in seq_len(nrow(numNode))) {
+    tryCatch({
+        # data for cluster i
+        # note: divide by total number of cells per sample (after filtering) to get
+        # proportions instead of counts
+        y <- numNode[i, ] / n_cells_smp
+        data_i <- cbind(y, n_cells_smp, formula$data)
+        # fit model
+        # note: provide proportions (y) together with weights for total number of cells per
+        # sample (n_cells_smp); this is equivalent to providing counts
+        fit <- glmer(formula$formula, data = data_i, family = "binomial", weights = n_cells_smp)
+        # test contrast
+        test <- multcomp::glht(fit, contrast)
+        # return p-value
+        glmm_p_vals[i,"glmm_coef_total"] <- summary(test)$test$coefficient
+        glmm_p_vals[i,"glmm_p_val_total"] <- summary(test)$test$pvalues
+        # return NA as p-value if there is an error
+    }, error = function(e) NA)
+    
+    tryCatch({
+        # data for cluster i
+        # note: divide by total number of cells per sample (after filtering) to get
+        # proportions instead of counts
+        y <- numNode[i, ] / numParent[i,]
+        data_i <- cbind(y, n_cells_smp, formula$data)
+        # fit model
+        # note: provide proportions (y) together with weights for total number of cells per
+        # sample (n_cells_smp); this is equivalent to providing counts
+        fit <- glmer(formula$formula, data = data_i, family = "binomial", weights = numParent[i,])
+        # test contrast
+        test <- multcomp::glht(fit, contrast)
+        # return p-value
+        glmm_p_vals[i,"glmm_coef_parent"] <- summary(test)$test$coefficient
+        glmm_p_vals[i,"glmm_p_val_parent"] <- summary(test)$test$pvalues
+        # return NA as p-value if there is an error
+    }, error = function(e) NA)
+}
+
+#' edgeR
+#' -------------
+
+## EdgeR parent
+cl <- apply(table(classes, samples),2,which.max)*(-1) + 2
+y <- DGEList(counts=numNode, group = cl[colnames(numNode)], lib.size = rep(1,ncol(numNode)))
+design <- model.matrix(~cl[colnames(numNode)])
+# I have logged it because of getOffset()
+y$offset <- log(numParent+1)
+y <- estimateDisp(y, design)
+fit <- glmFit(y,design)
+lrt <- glmLRT(fit,coef=2)
+top <- topTags(lrt, n = 10000)
+# head(top)
+topNodes <- top$table
+topNodes$node <- rownames(topNodes)
+
+## EdgeR total
+y <- DGEList(counts=numNode, group = cl[colnames(numNode)])
+y <- estimateDisp(y)
+fit <- glmFit(y)
+lrt <- glmLRT(fit,coef=2)
+top <- topTags(lrt, n = 10000)
+# head(top)
+topAll <- top$table
+colnames(topAll) <- paste("All",colnames(topAll), sep = "_")
+topAll$node <- rownames(topAll)
+
+## Combine treekoR p-values with edgeR and GLMM p-values
+compare_df <- tree_sig_df %>% 
+    bind_cols(
+        glmm_p_vals
+    ) %>% 
+    mutate(node = as.character(node)) %>% 
+    left_join(
+        topNodes %>%
+            dplyr::select(PValue, logFC, node) %>%
+            rename(c("edger_p_val_parent"="PValue", "edger_logFC_parent"="logFC")),
+        by=c("node"="node")
+    ) %>%
+    left_join(
+        topAll %>%
+            dplyr::select(All_PValue, All_logFC, node) %>%
+            rename(c("edger_p_val_total"="All_PValue", "edger_logFC_total"="All_logFC")),
+        by=c("node"="node")
+    )  %>%
+    mutate(`treekoR (%total)` = -log(pval_total,10)*sign(stat_total),
+           `treekoR (%parent)` = -log(pval_parent,10)*sign(stat_parent),
+           `GLMM (%total)` = -log(glmm_p_val_total+0.00001,10)*sign(glmm_coef_total)*(-1),
+           `GLMM (%parent)` = -log(glmm_p_val_parent+0.00001,10)*sign(glmm_coef_parent)*(-1),
+           `edgeR (%total)` = -log(edger_p_val_total,10)*sign(edger_logFC_total),
+           `edgeR (%parent)` = -log(edger_p_val_parent,10)*sign(edger_logFC_parent))
+```
+
+# Supplementary Figure 2
+
+```{r}
+top_treekoR_parent_nodes <- tree_sig_df %>% 
+    filter(pval_parent < 0.01 & pval_total > 0.1) %>%
+    pull(node)
+
+lowerFn <- function(data, mapping, method = "lm", ...) {
+    p <- ggplot(data = data, mapping = mapping) +
+        geom_point(size=1, aes(col=node_col)) +
+        geom_abline(linetype="dashed",...) +
+        scale_color_manual(values = c("grey50", "blue"))
+    p
+}
+
+diagFn <- function(data, mapping, ...) {
+    p<- ggplot(data = data, mapping=mapping) +
+        geom_density(..., alpha = 0.7, color = NA, fill="grey75") 
+    p
+}
+
+pairs_p <- ggpairs(compare_df %>%
+            mutate(node_col = ifelse(node %in% top_treekoR_parent_nodes,
+                                     "treekoR_signif", "")),
+        columns = c(22:27),
+        # legend = 1,
+        # mapping=ggplot2::aes(color = node_col),
+        lower = list(continuous = wrap(lowerFn)),
+        diag = list(continuous = diagFn))+
+        # upper = list(continuous = mycorrelations)) +
+    theme_bw() +
+    theme(legend.position = "bottom") +
+    labs(x=latex2exp::TeX("signed -log_{10}(p-value)"),
+         y=latex2exp::TeX("signed -log_{10}(p-value)"))
+
+pairs_p # Export as 9x10 pdf for manuscript "pval_treekoR_comparison.pdf"
+
+```
+
+# Session info
+```{r}
+sessionInfo()
+```
+
