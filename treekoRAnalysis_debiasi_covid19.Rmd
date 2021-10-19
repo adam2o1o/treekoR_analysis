@@ -17,6 +17,7 @@ editor_options:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, fig.width=10)
+knitr::opts_knit$set(root.dir = "C:/Users/acha5354/Desktop/New Folder/{SW}/PhD/Manuscripts/200805 Parent Proportion Paper/Code")
 ```
 
 # Run treekoR
@@ -71,9 +72,7 @@ tree_res_list <- lapply(hierarchy_meths,
                       clusters=clusters,
                       samples=samples,
                       classes=classes,
-                      pos_class_name=NULL,
-                      subjects=NULL,
-                      paired = FALSE)
+                      pos_class_name=NULL)
             
             return(list(clust_tree=clust_tree, tested_tree=tested_tree))
        })
@@ -85,7 +84,7 @@ tree_sig_df <- lapply(tree_res_list,
     bind_rows() %>%
     mutate(hierarchy = rep(hierarchy_meths, times=unlist(lapply(tree_res_list, 
                                                                     function(x) {nrow(x$tested_tree$data)})))) %>%
-    dplyr::select(node, label, isTip, statAll, statParent, pvalAll, pvalParent,
+    dplyr::select(node, label, isTip, stat_total, stat_parent, pval_total, pval_parent,
                     parent, clusters, hierarchy) %>%
     dplyr::rename(c("parent_node"="parent", "child_leaf_nodes"="clusters")) %>%
     mutate(parent_leaf_nodes = .[match(.[,"parent_node"] %>% pull, 
@@ -142,10 +141,10 @@ gg_theme <- theme_bw() +
 
 ```{r}
 p_val_comp <- prop_df %>%
-    select(class, prop_parent_161, prop_all_161) %>%
+    select(class, perc_parent_1_161, perc_total_161) %>%
     dplyr::rename(condition=class,
-                  c("treekoR - Proportion to Parent"= "prop_parent_161",
-                    "treekoR - Proportion to All"= "prop_all_161")) %>%
+                  c("treekoR - %parent"= "perc_parent_1_161",
+                    "treekoR - %total"= "perc_total_161")) %>%
     tidyr::pivot_longer(!c("condition"), names_to="prop_name", values_to="prop_val") %>%
     bind_rows(
         CD8_fig_dat %>%
@@ -156,7 +155,9 @@ p_val_comp <- prop_df %>%
     group_by(prop_name) %>%
     summarise(pval_t = t.test(prop_val ~ condition)$p.value,
               pval_wilcox = wilcox.test(prop_val ~ condition)$p.value) %>%
-    tidyr::pivot_longer(!prop_name, names_to="test", values_to="pval")
+    tidyr::pivot_longer(!prop_name, names_to="test", values_to="pval") %>%
+  mutate(prop_name = factor(prop_name,
+                            levels=c("De Biasi et al.", "treekoR - %total", "treekoR - %parent")))
 
 ggplot(p_val_comp,
         aes(y=prop_name, x=-log(pval,10), fill=test, col=test)) +
@@ -176,10 +177,10 @@ ggplot(p_val_comp,
 
 ```{r}
 prop_df %>%
-    select(class, prop_parent_161, prop_all_161) %>%
+    select(class, perc_parent_1_161, perc_total_161) %>%
     dplyr::rename(condition=class,
-                  c("treekoR - Proportion to Parent"= "prop_parent_161",
-                    "treekoR - Proportion to All"= "prop_all_161")) %>%
+                  c("treekoR - %parent"= "perc_parent_1_161",
+                    "treekoR - %total"= "perc_total_161")) %>%
     tidyr::pivot_longer(!c("condition"), names_to="prop_name", values_to="prop_val") %>%
     bind_rows(
         CD8_fig_dat %>%
@@ -191,9 +192,9 @@ prop_df %>%
     ggplot(aes(x=condition, y=prop_val, col=condition, fill=condition)) +
     geom_boxplot(outlier.size=-1, width=0.3) +
     geom_jitter(alpha=0.75, width=0.2) +
-    facet_wrap(~factor(prop_name,levels=c("treekoR - Proportion to All", 
+    facet_wrap(~factor(prop_name,levels=c("treekoR - %total", 
                                           "De Biasi et al.", 
-                                          "treekoR - Proportion to Parent")), scales="free", ncol=2) +
+                                          "treekoR - %parent")), scales="free", nrow=1) +
     gg_theme +
     theme(axis.text.x = element_blank(),
           axis.ticks.x = element_blank(),
@@ -255,7 +256,11 @@ plotFacettedRidgelinePlot(c("95", "97"), "98")
 ```
 
 # Benchmarking Files
+
+Below is the code used to generate the benchmarking files for this dataset. The other datasets used the same code but using their respective exprs, clusters, samples, classes etc. treekoR has been updated since the benchmark study, so the code below will not run unless minor changes are made.
+
 ```{r eval=FALSE}
+## This code used an older version of treekoR (0.99.7)
 hierarchy_meths <- c("hopach", "average")
 
 print("Generating hierarchical trees and testing...")
@@ -513,5 +518,10 @@ save(allPredictions_df,
      file=file.path(data_folder,
                     paste0("data//processed//benchmark_allPredictions_", 
                            data_panel, ".RData")))
+```
+
+# Session Info
+```{r}
+sessionInfo()
 ```
 

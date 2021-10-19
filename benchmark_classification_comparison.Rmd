@@ -15,7 +15,7 @@ editor_options:
   chunk_output_type: console
 ---
 
-```{css}
+```{css, include=FALSE}
 .main-container {
   max-width: 80%;
 }
@@ -125,6 +125,7 @@ cbp1 <- c("#e69f00", "#56b4e9", "#009e73", "#f0e442",
 # Visualisations
 ## Boxplot of Balanced Accuracy
 Side-by-side cell proportions and proportion to parent
+
 ```{r fig.width=13, fig.height=6}
 bal_acc_df <- parent_classif_df_combined %>%
     mutate(dataset=ifelse(data_panel_name !="", paste(dataset, data_panel_name, sep=" - "), dataset)) %>%
@@ -214,12 +215,21 @@ pr <- ggplot(classif_res_rank) +
   scale_color_manual(values=alpha(c("#C2FCF7", "#85BDBF", "#57737A"), 0.75)) +
   labs(size="Rank", col="Rank",
        x="", y="Features Used")
+```
 
+
+```{r fig.width=13, fig.height=9}
 # Export as 9x13 for treekoR paper
 plot_grid(pr, p,
           nrow=2,
           align="v",
           axis="lr",
           rel_heights=c(0.85,2))
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
 ```
 

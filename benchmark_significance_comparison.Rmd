@@ -17,7 +17,7 @@ editor_options:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, fig.width=9)
-knitr::opts_knit$set(root.dir = "C:\\Users\\acha5354\\Desktop\\New Folder\\{SW}\\PhD\\Projects\\200518 - Mass Cytometry Analyses")
+knitr::opts_knit$set(root.dir = "C:/Users/acha5354/Desktop/New Folder/{SW}/PhD/Manuscripts/200805 Parent Proportion Paper/Code")
 ```
 
 # Data Loading
@@ -117,7 +117,7 @@ cbp1 <- c("#e69f00", "#56b4e9", "#009e73", "#f0e442",
 # Visualisations
 
 ## Comparing proportion relative to parent vs relative to all
-```{r}
+```{r, fig.height=8, fig.width=13}
 #' Q-Q plots by ordering parent vs all
 qq_df <- tree_sig_df_combined %>%
   dplyr::filter(statAll != 0) %>%
@@ -162,4 +162,11 @@ ggplot(qq_df %>%
        col="Hierarchy Type") # Exported as 8 x 13 for paper
 
 ```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
 

@@ -81,9 +81,7 @@ tree_res_list <- lapply(hierarchy_meths,
                       clusters=clusters,
                       samples=samples,
                       classes=classes,
-                      pos_class_name=NULL,
-                      subjects=NULL,
-                      paired = FALSE)
+                      pos_class_name=NULL)
             
             return(list(clust_tree=clust_tree, tested_tree=tested_tree))
        })
@@ -95,7 +93,7 @@ tree_sig_df <- lapply(tree_res_list,
     bind_rows() %>%
     mutate(hierarchy = rep(hierarchy_meths, times=unlist(lapply(tree_res_list, 
                                                                     function(x) {nrow(x$tested_tree$data)})))) %>%
-    dplyr::select(node, label, isTip, statAll, statParent, pvalAll, pvalParent,
+    dplyr::select(node, label, isTip, stat_total, stat_parent, pval_total, pval_parent,
                     parent, clusters, hierarchy) %>%
     dplyr::rename(c("parent_node"="parent", "child_leaf_nodes"="clusters")) %>%
     mutate(parent_leaf_nodes = .[match(.[,"parent_node"] %>% pull, 
@@ -134,19 +132,20 @@ plotInteractiveHeatmap(tree_res_list[[1]]$tested_tree,
 
 ```{r}
 # Plot scatterplot with parent vs. all proportions
-max_val <- max(abs(c(tree_res_list[[1]]$tested_tree$data$statAll, tree_res_list[[1]]$tested_tree$data$statParent)))
+max_val <- max(abs(c(tree_res_list[[1]]$tested_tree$data$stat_total, tree_res_list[[1]]$tested_tree$data$stat_parent)),
+               na.rm=T)
 
 g1 <- ggplot(tree_res_list[[1]]$tested_tree$data %>% # Use node name where label is null
                mutate(label = ifelse(is.na(label),node,label)),
-             aes(x = statAll, y = statParent, shape=isTip, col=isTip,
+             aes(x = stat_total, y = stat_parent, shape=isTip, col=isTip,
                  data_id=label, tooltip=label))+
   geom_point() + 
   # geom_point(size=1.5)+
   geom_hline(yintercept = 0, linetype="dashed")+
   geom_vline(xintercept = 0, linetype="dashed")+
   coord_equal(xlim=c(-max_val,max_val),ylim=c(-max_val,max_val))+
-  labs(x = "Statistic: Relative to all",y = "Statistic: Relative to parent",
-       title = "Significance between patient condition using prop. to parent vs prop. to all",
+  labs(x = "Statistic: %total",y = "Statistic: %parent",
+       title = "Significance between patient condition using %parent vs %total",
        subtitle = paste0("Dataset - ", 
                          data_folder,
                          ifelse(exists("data_panel"),
@@ -169,11 +168,13 @@ The two populations of interest are cluster 42 (sibling: cluster 54) and cluster
 
 ```{r}
 prop_df_list[[1]]$prop_df %>%
-  select(contains(c("_42", "_122")), class, sample) %>%
-  gather(variable, value, -c(class, sample)) %>%
+  select(contains(c("_42", "_122")), class, sample_id) %>%
+  gather(variable, value, -c(class, sample_id)) %>%
+  filter(variable %in% c("perc_total_42", "perc_total_122",
+                         "perc_parent_1_42", "perc_parent_1_122")) %>%
   # mutate(variable = factor(variable, levels = apply(expand.grid(c("prop_all", "prop_parent"), c("_19","_60","_126")), 1, paste0, collapse=""))) %>%
   mutate(variable = factor(variable, 
-                           levels = sapply(c("prop_all", "prop_parent"), 
+                           levels = sapply(c("perc_total", "perc_parent_1"), 
                                            function(x) paste0(x, c("_42", "_122"))) %>% 
                              as.vector)) %>%
   ggplot(aes(x=class, y=value, col=class, fill=class)) +
@@ -260,4 +261,9 @@ Note: The sibling cluster of interest is cluster 122 which is 72 & 73 combined) 
 
 ```{r fig.width=10, fig.height=10}
 plotFacettedRidgelinePlot(c("72","73"), "64")
+```
+
+# Session Info
+```{r}
+sessionInfo()
 ```
