@@ -81,41 +81,50 @@ tested_tree <- treekoR::testTree(phylo=clust_tree$clust_tree,
 
 tree_sig_df <- tested_tree$data
 
-numParent <- NULL
-numNode <- NULL
+n_parent <- NULL
+n_node <- NULL
 for (i in seq_len(nrow(td))) {
-    childClusters <- td[i, "clusters"][[1]][[1]]
-    parent <- td[i, "parent"][[1]]
-    parentClusters <- td[td$node == parent, "clusters"][[1]][[1]]
-    numParent <- rbind(numParent, tapply(clusters %in% parentClusters,
-                                         samples, sum))
-    numNode <- rbind(numNode, tapply(clusters %in% childClusters, samples,
-                                     sum))
+    child_clusters <- td[i, "clusters"][[1]][[1]]
+    parent_node <- td[i, "parent"][[1]]
+    parent_clusters <- td[td$node == parent_node, "clusters"][[1]][[1]]
+    n_parent <- rbind(n_parent, tapply(clusters %in% parent_clusters,
+                                       samples, sum))
+    n_node <- rbind(n_node, tapply(clusters %in% child_clusters, samples,
+                                   sum))
 }
 
 #' GLMM
 #' -------------
 
-glmm_p_vals <- data.frame(matrix(nrow=nrow(numNode), ncol=4))
+glmm_p_vals <- data.frame(matrix(nrow=nrow(n_node), ncol=4))
 colnames(glmm_p_vals) <- c("glmm_coef_total", "glmm_p_val_total",
                            "glmm_coef_parent", "glmm_p_val_parent")
 
-n_cells_smp <- colSums(numNode[tree_sig_df %>% filter(isTip) %>% pull(node),])
+n_cells_smp <- colSums(n_node[td %>% filter(isTip) %>% pull(node),])
 
-experiment_info <- metadata(sce)$experiment_info
-contrast <- t(createContrast(c(0, 1)))
+# experiment_info <- metadata(sce)$experiment_info
 
-formula <- createFormula(experiment_info, 
-                         cols_fixed="condition", 
-                         cols_random = "sample_id")
+experiment_info <- data.frame(sample_id=samples,
+                              condition=classes) %>%
+  unique() %>%
+  left_join(
+    data.frame(n_cells=n_cells_smp,
+               sample_id=names(n_cells_smp)),
+    by="sample_id"
+  )
 
+contrast <- matrix(c(0, 1), ncol=2)
 
-for (i in seq_len(nrow(numNode))) {
+formula <- diffcyt::createFormula(experiment_info, 
+                                  cols_fixed="condition", 
+                                  cols_random = "sample_id")
+
+for (i in seq_len(nrow(n_node))) {
     tryCatch({
         # data for cluster i
         # note: divide by total number of cells per sample (after filtering) to get
         # proportions instead of counts
-        y <- numNode[i, ] / n_cells_smp
+        y <- n_node[i, ] / n_cells_smp
         data_i <- cbind(y, n_cells_smp, formula$data)
         # fit model
         # note: provide proportions (y) together with weights for total number of cells per
@@ -133,12 +142,12 @@ for (i in seq_len(nrow(numNode))) {
         # data for cluster i
         # note: divide by total number of cells per sample (after filtering) to get
         # proportions instead of counts
-        y <- numNode[i, ] / numParent[i,]
+        y <- n_node[i, ] / n_parent[i,]
         data_i <- cbind(y, n_cells_smp, formula$data)
         # fit model
         # note: provide proportions (y) together with weights for total number of cells per
         # sample (n_cells_smp); this is equivalent to providing counts
-        fit <- glmer(formula$formula, data = data_i, family = "binomial", weights = numParent[i,])
+        fit <- glmer(formula$formula, data = data_i, family = "binomial", weights = n_parent[i,])
         # test contrast
         test <- multcomp::glht(fit, contrast)
         # return p-value
@@ -153,10 +162,10 @@ for (i in seq_len(nrow(numNode))) {
 
 ## EdgeR parent
 cl <- apply(table(classes, samples),2,which.max)*(-1) + 2
-y <- DGEList(counts=numNode, group = cl[colnames(numNode)], lib.size = rep(1,ncol(numNode)))
-design <- model.matrix(~cl[colnames(numNode)])
+y <- DGEList(counts=n_node, group = cl[colnames(n_node)], lib.size = rep(1,ncol(n_node)))
+design <- model.matrix(~cl[colnames(n_node)])
 # I have logged it because of getOffset()
-y$offset <- log(numParent+1)
+y$offset <- log(n_parent+1)
 y <- estimateDisp(y, design)
 fit <- glmFit(y,design)
 lrt <- glmLRT(fit,coef=2)
@@ -166,7 +175,7 @@ topNodes <- top$table
 topNodes$node <- rownames(topNodes)
 
 ## EdgeR total
-y <- DGEList(counts=numNode, group = cl[colnames(numNode)])
+y <- DGEList(counts=n_node, group = cl[colnames(n_node)])
 y <- estimateDisp(y)
 fit <- glmFit(y)
 lrt <- glmLRT(fit,coef=2)
@@ -202,9 +211,9 @@ compare_df <- tree_sig_df %>%
            `edgeR (%parent)` = -log(edger_p_val_parent,10)*sign(edger_logFC_parent))
 ```
 
-# Supplementary Figure 2
+# Supplementary Figure 1
 
-```{r}
+```{r warning=FALSE}
 top_treekoR_parent_nodes <- tree_sig_df %>% 
     filter(pval_parent < 0.01 & pval_total > 0.1) %>%
     pull(node)
